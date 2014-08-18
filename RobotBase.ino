@@ -19,6 +19,11 @@ byte crc = 0;
 #define RC_TX_PIN 11
 RoboClaw roboclaw(RC_RX_PIN, RC_TX_PIN);
 
+//
+#define AUX_POWER_PIN 7
+#define MOTOR_POWER_PIN 8
+#define UPS_POWER_PIN 9
+
 // common vars //
 unsigned long lastCommandTime;
 unsigned long commandTime;
@@ -50,10 +55,16 @@ void setup()
   pinMode(4, INPUT_PULLUP);
   pinMode(5, INPUT_PULLUP);
   pinMode(6, INPUT_PULLUP);
-  pinMode(7, INPUT_PULLUP);
-  pinMode(8, INPUT_PULLUP);
-  pinMode(9, INPUT_PULLUP);
   pinMode(10, INPUT_PULLUP);
+  
+  pinMode(MOTOR_POWER_PIN, OUTPUT);
+  digitalWrite(MOTOR_POWER_PIN, LOW);
+  pinMode(UPS_POWER_PIN, OUTPUT);
+  digitalWrite(UPS_POWER_PIN, LOW);
+  pinMode(AUX_POWER_PIN, OUTPUT);
+  digitalWrite(AUX_POWER_PIN, HIGH);
+  delay(20);
+  digitalWrite(AUX_POWER_PIN, LOW);
   
   // start ports
   roboclaw.begin(38400);
@@ -120,6 +131,7 @@ void crc8(byte x)
 
 void CheckCommandTimeout()
 {
+  if (cmdTimeout == 0) return;
   commandTime = millis();
   if (commandTime >= lastCommandTime) commandTime -= lastCommandTime; else lastCommandTime = 0;
   if (commandTime > cmdTimeout) OnDisconnected();
@@ -168,7 +180,9 @@ void Execute()
   else
   if (cmd == 'V' || cmd == 'v') ver();
   else
-  if (cmd == 'P' || cmd == 'p') param();
+  if (cmd == 'P' || cmd == 'p') power();
+  else
+  if (cmd == 'S' || cmd == 's') settings();
   else
   if (cmd == 'B' || cmd == 'b') battery();
   else
@@ -317,9 +331,21 @@ void ver()
   Serial.println("V2");
 }
 
-// 'set parameter' command
-// ex: PT2500
-void param()
+// power control command
+// ex: PU - full shutdown (UPS shutdown)
+void power()
+{
+  cmd = buf[1];
+  if (cmd == 'A' || cmd == 'a') { digitalWrite(AUX_POWER_PIN, HIGH); delay(50); digitalWrite(AUX_POWER_PIN, LOW); delay(2000); digitalWrite(AUX_POWER_PIN, HIGH); delay(50); digitalWrite(AUX_POWER_PIN, LOW); }
+  else
+  if (cmd == 'M' || cmd == 'm') { digitalWrite(MOTOR_POWER_PIN, HIGH); delay(50); digitalWrite(MOTOR_POWER_PIN, LOW); }
+  else
+  if (cmd == 'U' || cmd == 'u') { digitalWrite(UPS_POWER_PIN, HIGH); delay(5500); digitalWrite(UPS_POWER_PIN, LOW); }
+}
+
+// 'settings' command
+// ex: ST2500 - set timeout to 2500ms. 0 to disable
+void settings()
 {
   cmd = buf[1];
   // command timeout
@@ -331,7 +357,7 @@ void param()
 void battery()
 {
   //unsigned int voltage = (unsigned int)roboclaw.ReadMainBatteryVoltage(RC_ADDR, 0);
-  int voltage = analogRead(0) * 4.8828;
+  unsigned int voltage = (unsigned int)analogRead(0) * 312 >> 6;
   Serial.write('B');
   Serial.println(voltage);
 }
