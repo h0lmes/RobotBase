@@ -1,0 +1,12 @@
+in BMSerial.cpp:
+
+1. Modify method:  void BMSerial::begin(long speed)
+At the beginning append:
+setTX(_transmitPin);
+setRX(_receivePin);
+
+2. Modify method:  void BMSerial::end()
+At the end append:
+pinMode(_receivePin, OUTPUT);
+digitalWrite(_receivePin, 0);
+digitalWrite(_transmitPin, 0);

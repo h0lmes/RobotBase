@@ -382,7 +382,8 @@ void settings()
 void battery()
 {
   //unsigned int voltage = (unsigned int)roboclaw.ReadMainBatteryVoltage(RC_ADDR, 0);
-  int voltage = analogRead(0) * 4.8828;
+  //int voltage = analogRead(0) * 4.8828;
+  unsigned int voltage = (unsigned int)analogRead(0) * 312 >> 6;
   Serial.write('B');
   Serial.println(voltage);
 }
