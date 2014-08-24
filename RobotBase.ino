@@ -5,7 +5,7 @@
 
 #define LED_PIN 13
 
-// serial input //
+// host communication //
 #define MAX_COMMAND 10
 #define BUF_SIZE 32
 byte buf[BUF_SIZE];
@@ -13,16 +13,11 @@ byte cmd = 0;
 byte bytes = 0;
 byte crc = 0;
 
-// RoboClaw //
-#define RC_ADDR 0x80
-#define RC_RX_PIN 12
-#define RC_TX_PIN 11
-RoboClaw roboclaw(RC_RX_PIN, RC_TX_PIN);
-
-//
+// power management //
 #define AUX_PIN 7
 #define MOTORS_PIN 8
 #define UPS_PIN 9
+#define BATTERY_PIN 10
 
 // common vars //
 unsigned long lastCommandTime;
@@ -31,7 +26,13 @@ unsigned long cmdTimeout = 2500;
 boolean ledCmdOn = false;
 boolean IsConnected = false;
 
-// drive vars
+// RoboClaw //
+#define RC_ADDR 0x80
+#define RC_RX_PIN 12
+#define RC_TX_PIN 11
+RoboClaw roboclaw(RC_RX_PIN, RC_TX_PIN);
+
+// propulsion vars
 #define MOTOR_VELOCITY_0 64
 #define MOTOR_VELOCITY_MAX 63
 byte motor1 = MOTOR_VELOCITY_0;
@@ -40,14 +41,14 @@ byte motor2 = MOTOR_VELOCITY_0;
 byte motor2_target = MOTOR_VELOCITY_0;
 byte motor_velocity = 30;
 byte motor_velocity_increment = 5;
-unsigned int motor_counter_start = 3000;
+unsigned int motor_counter_start = 4000;
 unsigned int motor_counter = 0;
 
 //=======================================
 
 void setup() 
 {
-  // setup pins to lower power consumption
+  // unused pins
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   pinMode(2, INPUT_PULLUP);
@@ -55,19 +56,22 @@ void setup()
   pinMode(4, INPUT_PULLUP);
   pinMode(5, INPUT_PULLUP);
   pinMode(6, INPUT_PULLUP);
-  pinMode(10, INPUT_PULLUP);
   
+  // power management pins //
   pinMode(AUX_PIN, OUTPUT);
   pinMode(MOTORS_PIN, OUTPUT);
   pinMode(UPS_PIN, OUTPUT);
+  pinMode(BATTERY_PIN, OUTPUT);
   digitalWrite(AUX_PIN, LOW);
   digitalWrite(MOTORS_PIN, LOW);
   digitalWrite(UPS_PIN, LOW);
+  digitalWrite(BATTERY_PIN, LOW);
   pulsePin(AUX_PIN, 20);
   
-  //
+  // host communication //
   Serial.begin(38400);
-  //
+  
+  // propulsion (RoboClaw) //
   driveInit(true);
   driveInit(false);
 }
@@ -381,9 +385,10 @@ void settings()
 // ex: B
 void battery()
 {
-  //unsigned int voltage = (unsigned int)roboclaw.ReadMainBatteryVoltage(RC_ADDR, 0);
-  //int voltage = analogRead(0) * 4.8828;
-  unsigned int voltage = (unsigned int)analogRead(0) * 312 >> 6;
+  digitalWrite(BATTERY_PIN, HIGH);
+  analogRead(0);
+  unsigned long voltage = (unsigned long)analogRead(0) * 625 >> 7;
+  digitalWrite(BATTERY_PIN, LOW);
   Serial.write('B');
   Serial.println(voltage);
 }
@@ -395,8 +400,7 @@ void dwrite()
   byte pin = bctoi(1, 2);
   if (pin < 2 || pin > 10) { err(); return; }
   pinMode(pin, OUTPUT);
-  if (buf[3] == '0') digitalWrite(pin, 0);
-	else digitalWrite(pin, 1);
+  if (buf[3] == '0') digitalWrite(pin, 0); else digitalWrite(pin, 1);
 }
 
 // 'digitalRead' command
@@ -420,11 +424,9 @@ void aread()
 {
   byte pin = bctoi(2, 1);
   if (pin < 0 || pin > 7) { err(); return; }
-  unsigned long a;
-  a = (unsigned long) analogRead(pin);
-  a = a * 5000 / 1024;
+  unsigned long a = (unsigned long)analogRead(pin) * 625 >> 7;
   Serial.print("RA");
-  Serial.print((unsigned int) pin);
+  Serial.print((unsigned int)pin);
   Serial.print("=");
   Serial.println(a);
 }
