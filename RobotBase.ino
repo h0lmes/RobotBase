@@ -19,6 +19,11 @@ byte crc = 0;
 #define RC_TX_PIN 11
 RoboClaw roboclaw(RC_RX_PIN, RC_TX_PIN);
 
+//
+#define AUX_PIN 7
+#define MOTORS_PIN 8
+#define UPS_PIN 9
+
 // common vars //
 unsigned long lastCommandTime;
 unsigned long commandTime;
@@ -50,15 +55,24 @@ void setup()
   pinMode(4, INPUT_PULLUP);
   pinMode(5, INPUT_PULLUP);
   pinMode(6, INPUT_PULLUP);
-  pinMode(7, INPUT_PULLUP);
-  pinMode(8, INPUT_PULLUP);
-  pinMode(9, INPUT_PULLUP);
   pinMode(10, INPUT_PULLUP);
   
-  // start ports
-  roboclaw.begin(38400);
+  pinMode(AUX_PIN, OUTPUT);
+  pinMode(MOTORS_PIN, OUTPUT);
+  pinMode(UPS_PIN, OUTPUT);
+  digitalWrite(AUX_PIN, LOW);
+  digitalWrite(MOTORS_PIN, LOW);
+  digitalWrite(UPS_PIN, LOW);
+  pulsePin(AUX_PIN, 20);
+  
+  //
   Serial.begin(38400);
+  //
+  driveInit(true);
+  driveInit(false);
 }
+
+//=======================================
 
 void loop()
 {
@@ -82,7 +96,7 @@ void ReadSerial()
     if (buf[bytes] == 10 || buf[bytes] == 13 || bytes >= MAX_COMMAND)
     {
       if (bytes > 0) Execute();
-			//if (bytes > 0) if (crc8_ok()) Execute();
+      //if (bytes > 0) if (crc8_ok()) Execute();
       return;
     }
     bytes++;
@@ -120,6 +134,7 @@ void crc8(byte x)
 
 void CheckCommandTimeout()
 {
+  if (cmdTimeout == 0) return;
   commandTime = millis();
   if (commandTime >= lastCommandTime) commandTime -= lastCommandTime; else lastCommandTime = 0;
   if (commandTime > cmdTimeout) OnDisconnected();
@@ -168,7 +183,9 @@ void Execute()
   else
   if (cmd == 'V' || cmd == 'v') ver();
   else
-  if (cmd == 'P' || cmd == 'p') param();
+  if (cmd == 'P' || cmd == 'p') power();
+  else
+  if (cmd == 'S' || cmd == 's') settings();
   else
   if (cmd == 'B' || cmd == 'b') battery();
   else
@@ -230,14 +247,14 @@ void drive()
   }
   else
   if (cmd == 'Z' || cmd == 'z') // stop immediately
-	{
-		motor1_target = MOTOR_VELOCITY_0;
-		motor1 = MOTOR_VELOCITY_0;
-		motor2_target = MOTOR_VELOCITY_0;
-		motor2 = MOTOR_VELOCITY_0;
-		roboclaw.ForwardBackwardM1(RC_ADDR, motor1);
-		roboclaw.ForwardBackwardM2(RC_ADDR, motor2);
-	}
+  {
+    motor1_target = MOTOR_VELOCITY_0;
+    motor1 = MOTOR_VELOCITY_0;
+    motor2_target = MOTOR_VELOCITY_0;
+    motor2 = MOTOR_VELOCITY_0;
+    roboclaw.ForwardBackwardM1(RC_ADDR, motor1);
+    roboclaw.ForwardBackwardM2(RC_ADDR, motor2);
+  }
   else
   if (cmd == 'F' || cmd == 'f') { motor1_target = MOTOR_VELOCITY_0 + motor_velocity; motor2_target = motor1_target; }
   else
@@ -248,6 +265,8 @@ void drive()
   if (cmd == 'R' || cmd == 'r') { motor1_target = MOTOR_VELOCITY_0 + motor_velocity; motor2_target = MOTOR_VELOCITY_0 - motor_velocity; }
   else
   if (cmd == 'S' || cmd == 's') { driveStop(); }
+  else
+  if (cmd == 'E' || cmd == 'e') { driveInit(buf[2] == '1'); }
   else
   if (cmd == 'V' || cmd == 'v')
   {
@@ -310,16 +329,48 @@ void updateMotors()
   }
 }
 
+void driveInit(boolean action)
+{
+  if (action) roboclaw.begin(38400);
+  else roboclaw.end();
+}
+
+//=======================================
+
+
+
+
+
+
+
+
+
+
+
+
+//=======================================
+
 // 'version' command
 // ex: V
 void ver()
 {
-  Serial.println("V2");
+  Serial.println("V3");
+}
+
+// 'power' command
+void power()
+{
+  cmd = buf[1];
+  if (cmd == 'A' || cmd == 'a') { pulsePin(AUX_PIN, 20); delay(3000); pulsePin(AUX_PIN, 20);  }
+  else
+  if (cmd == 'M' || cmd == 'm') pulsePin(MOTORS_PIN, 20);
+  else
+  if (cmd == 'U' || cmd == 'u') pulsePin(UPS_PIN, 5500);
 }
 
 // 'set parameter' command
-// ex: PT2500
-void param()
+// ex: ST2500
+void settings()
 {
   cmd = buf[1];
   // command timeout
@@ -375,6 +426,14 @@ void aread()
   Serial.print((unsigned int) pin);
   Serial.print("=");
   Serial.println(a);
+}
+
+//
+void pulsePin(int pin, int ms)
+{
+  digitalWrite(pin, HIGH);
+  delay(ms);
+  digitalWrite(pin, LOW);
 }
 
 // converts string to number. reads 'count' chars starting at 'index' position in buffer
