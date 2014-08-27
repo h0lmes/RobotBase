@@ -20,8 +20,7 @@ boolean doCRC = false;
 
 // common vars //
 unsigned long lastCommandTime;
-unsigned long commandTime;
-unsigned long cmdTimeout = 2500;
+unsigned long commandTimeout = 2500;
 boolean IsConnected = false;
 
 // RoboClaw //
@@ -30,6 +29,8 @@ boolean IsConnected = false;
 #define RC_TX_PIN 11
 RoboClaw roboclaw(RC_RX_PIN, RC_TX_PIN);
 boolean driveEnabled = false;
+unsigned long lastDriveCommandTime;
+unsigned long driveCommandTimeout = 60000;
 
 // propulsion vars
 #define MOTOR_VELOCITY_0 64
@@ -83,6 +84,7 @@ void loop()
   // serial input
   ReadSerial();
   if (IsConnected) CheckCommandTimeout();
+  if (driveEnabled) CheckDriveCommandTimeout();
   
   // motors
   if (motor_counter > 0) motor_counter--;
@@ -141,10 +143,10 @@ void crc8(byte x)
 
 void CheckCommandTimeout()
 {
-  if (cmdTimeout == 0) return;
-  commandTime = millis();
+  if (commandTimeout == 0) return;
+  unsigned long commandTime = millis();
   if (commandTime >= lastCommandTime) commandTime -= lastCommandTime; else lastCommandTime = 0;
-  if (commandTime > cmdTimeout) OnDisconnected();
+  if (commandTime > commandTimeout) OnDisconnected();
 }
 
 void OnDisconnected()
@@ -266,7 +268,8 @@ void drive()
 // update motor velocities
 void updateMotors()
 {
-  if (!driveEnabled) return;
+  if (motor1 == motor1_target && motor2 == motor2_target) return;
+  if (!driveEnabled) { driveEnable(true); delay(20); }
   
   // M1
   if (motor1 != motor1_target)
@@ -284,6 +287,7 @@ void updateMotors()
       else motor1 = motor1_target;
     }
     roboclaw.ForwardBackwardM1(RC_ADDR, motor1);
+    lastDriveCommandTime = millis();
   }
   // M2
   if (motor2 != motor2_target)
@@ -301,6 +305,7 @@ void updateMotors()
       else motor2 = motor2_target;
     }
     roboclaw.ForwardBackwardM2(RC_ADDR, motor2);
+    lastDriveCommandTime = millis();
   }
 }
 
@@ -314,6 +319,7 @@ void driveStop()
   motor2 = MOTOR_VELOCITY_0;
   roboclaw.ForwardBackwardM1(RC_ADDR, motor1);
   roboclaw.ForwardBackwardM2(RC_ADDR, motor2);
+  lastDriveCommandTime = millis();
 }
 
 // enable/disable motor driver communication and power
@@ -323,6 +329,7 @@ void driveEnable(boolean action)
   {
     pulsePin(MOTORS_PIN, 20);
     driveUART(true);
+    lastDriveCommandTime = millis();
   }
   else
   {
@@ -337,6 +344,14 @@ void driveUART(boolean action)
   if (action) roboclaw.begin(38400);
   else roboclaw.end();
   driveEnabled = action;
+}
+
+void CheckDriveCommandTimeout()
+{
+  if (driveCommandTimeout == 0) return;
+  unsigned long driveCommandTime = millis();
+  if (driveCommandTime >= lastDriveCommandTime) driveCommandTime -= lastDriveCommandTime; else lastDriveCommandTime = 0;
+  if (driveCommandTime > driveCommandTimeout) driveEnable(false);
 }
 
 //=======================================
@@ -381,7 +396,7 @@ void set()
 {
   cmd = buf[1];
   // command timeout
-  if (cmd == 'T' || cmd == 't') cmdTimeout = bctoi(2, 2) * 100;
+  if (cmd == 'T' || cmd == 't') commandTimeout = bctoi(2, 2) * 100;
   else
   if (cmd == 'C' || cmd == 'c') doCRC = buf[2] == '1';
   else
@@ -394,7 +409,7 @@ void set()
 void battery()
 {
   digitalWrite(BATTERY_PIN, HIGH);
-  analogRead(0);
+  delay(20);
   unsigned long voltage = (unsigned long)analogRead(0) * 625 >> 7;
   digitalWrite(BATTERY_PIN, LOW);
   Serial.write('B');
