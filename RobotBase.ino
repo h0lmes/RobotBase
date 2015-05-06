@@ -1,16 +1,17 @@
 #include <BMSerial.h>
 #include <RoboClaw.h>
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
 
 #define LED_PIN 13
 
 // host communication //
 #define MAX_COMMAND 10
-#define BUF_SIZE 32
+#define BUF_SIZE 16
 byte buf[BUF_SIZE];
 byte cmd = 0;
 byte bytes = 0;
 byte crc = 0;
-boolean doCRC = false;
 
 // power management //
 #define AUX_PIN 7
@@ -32,7 +33,12 @@ boolean driveEnabled = false;
 unsigned long lastDriveCommandTime;
 unsigned long driveCommandTimeout = 60000;
 
+// servos
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+
 // propulsion vars
+#define MOTOR_COUNTER_START 3000
+#define MOTOR_TARGET_MAX 127
 #define MOTOR_VELOCITY_0 64
 #define MOTOR_VELOCITY_MAX 63
 #define MOTOR_TARGET_MAX 127
@@ -40,9 +46,7 @@ byte motor1 = MOTOR_VELOCITY_0;
 byte motor1_target = MOTOR_VELOCITY_0;
 byte motor2 = MOTOR_VELOCITY_0;
 byte motor2_target = MOTOR_VELOCITY_0;
-byte motor_velocity = 30;
-byte motor_velocity_increment = 5;
-unsigned int motor_counter_start = 3000;
+byte motor_increment = 5;
 unsigned int motor_counter = 0;
 
 //=======================================
@@ -68,11 +72,15 @@ void setup()
   digitalWrite(UPS_PIN, LOW);
   digitalWrite(BATTERY_PIN, LOW);
   pulsePin(AUX_PIN, 20);
+
+  // servo controller
+  pwm.begin();
+  pwm.setPWMFreq(50);  // servos run at ~50 Hz updates
   
   // host communication //
   Serial.begin(38400);
   
-  // init motor driver //
+  // motor driver //
   driveUART(true);
   driveUART(false);
 }
@@ -101,18 +109,14 @@ void ReadSerial()
     buf[bytes] = Serial.read();
     if (buf[bytes] == 10 || buf[bytes] == 13 || bytes >= MAX_COMMAND)
     {
-      if (bytes > 0)
-      {
-        if (!doCRC) Execute();
-        else { if (crc8_ok()) Execute(); }
-      }
+      if (bytes > 0) Execute();
       return;
     }
     bytes++;
   }
 }
 
-boolean crc8_ok()
+boolean crc8ok()
 {
   crc = 0;
   for (byte i = 0; i < bytes - 1; i++) crc8(buf[i]);
@@ -120,7 +124,7 @@ boolean crc8_ok()
   // if error
   bytes = 0; // empty input buffer
   driveStop(); // disable motors
-  Serial.println("CRC"); // report CRC error
+  Serial.println("crc"); // report CRC error
   return false;
 }
 
@@ -165,11 +169,11 @@ void OnValidCommand()
 
 // report error
 void err()
-{ Serial.println("ERR"); }
+{ Serial.println("err"); }
 
 // report negative acknowledge
 void nak()
-{ Serial.println("NAK"); }
+{ Serial.println("nak"); }
 
 // execute command in buffer //
 // the first character is a command identifier
@@ -180,21 +184,21 @@ void Execute()
   cmd = buf[0];
   if (cmd == 0 || cmd == 32) return;
   
-  if (cmd == 'D' || cmd == 'd') drive();
+  if (cmd == 'd') drive();
   else
-  if (cmd == 'V' || cmd == 'v') ver();
+  if (cmd == 'p') power();
   else
-  if (cmd == 'P' || cmd == 'p') power();
+  if (cmd == 's') servo();
   else
-  if (cmd == 'S' || cmd == 's') set();
+  if (cmd == 'b') battery();
   else
-  if (cmd == 'B' || cmd == 'b') battery();
+  if (cmd == 'v') Serial.println("v5");
   else
-  if (cmd == 'R' || cmd == 'r') _read();
+  if (cmd == 'r') _read();
   else
-  if (cmd == 'W' || cmd == 'w') _write();
+  if (cmd == 'w') _write();
   else
-  if (cmd == 'Z' || cmd == 'z') { OnDisconnected(); return; }
+  if (cmd == 'z') { OnDisconnected(); return; }
   else
   {
     nak(); return;
@@ -219,14 +223,14 @@ void Execute()
 //=======================================
 
 // 'drive' command. both motors in one command
-// ex: DF - drive forward at 'motor_velocity'
 // ex: DD127127 - drive differential. full forward
+// ex: DD064064 - drive differential. stop
 // ex: DD000000 - drive differential. full backward
 void drive()
 {
   cmd = buf[1];
   
-  if (cmd == 'D' || cmd == 'd') // drive differential
+  if (cmd == 'd') // drive differential
   {
     motor1_target = bctoi(2, 3);
     motor2_target = bctoi(5, 3);
@@ -234,31 +238,20 @@ void drive()
     if (motor2_target > MOTOR_TARGET_MAX) motor2_target = MOTOR_TARGET_MAX;
   }
   else
-  if (cmd == 'Z' || cmd == 'z') driveStop(); // stop immediately
-  else
-  if (cmd == 'F' || cmd == 'f') { motor1_target = MOTOR_VELOCITY_0 + motor_velocity; motor2_target = motor1_target; }
-  else
-  if (cmd == 'B' || cmd == 'b') { motor1_target = MOTOR_VELOCITY_0 - motor_velocity; motor2_target = motor1_target; }
-  else
-  if (cmd == 'L' || cmd == 'l') { motor1_target = MOTOR_VELOCITY_0 - motor_velocity; motor2_target = MOTOR_VELOCITY_0 + motor_velocity; }
-  else
-  if (cmd == 'R' || cmd == 'r') { motor1_target = MOTOR_VELOCITY_0 + motor_velocity; motor2_target = MOTOR_VELOCITY_0 - motor_velocity; }
-  else
-  if (cmd == 'S' || cmd == 's') { motor1_target = MOTOR_VELOCITY_0; motor2_target = MOTOR_VELOCITY_0; }
-  else
-  if (cmd == 'E' || cmd == 'e') driveEnable(true);
-  else
-  if (cmd == 'O' || cmd == 'o') driveEnable(false);
-  else
-  if (cmd == 'V' || cmd == 'v')
+  if (cmd == 'r') // drive reset
   {
-    motor_velocity = bctoi(2, 2);
-    if (motor_velocity > MOTOR_VELOCITY_MAX) motor_velocity = MOTOR_VELOCITY_MAX;
+    driveUART(false);
+    pm();
+    delay(100);
+    pm();
+    driveUART(true);
   }
   else
-  if (cmd == 'I' || cmd == 'i') motor_velocity_increment = bctoi(2, 2);
+  if (cmd == 'e') driveUART(true);
   else
-  if (cmd == 'C' || cmd == 'c') motor_counter_start = (unsigned int)bctoi(2, 1) * 1000;
+  if (cmd == 'o') driveUART(false);
+  else
+  if (cmd == 'i') motor_increment = bctoi(2, 2);
   else
   {
     nak();
@@ -269,21 +262,22 @@ void drive()
 void updateMotors()
 {
   if (motor1 == motor1_target && motor2 == motor2_target) return;
+  // enable motor driver if it is disabled
   if (!driveEnabled) { driveEnable(true); delay(20); }
   
   // M1
   if (motor1 != motor1_target)
   {
-    motor_counter = motor_counter_start;
+    motor_counter = MOTOR_COUNTER_START;
     if (motor1 < motor1_target)
     {
-      if (motor1_target - motor1 > motor_velocity_increment) motor1 += motor_velocity_increment;
+      if (motor1_target - motor1 > motor_increment) motor1 += motor_increment;
       else motor1 = motor1_target;
     }
     else
     if (motor1 > motor1_target)
     {
-      if (motor1 - motor1_target > motor_velocity_increment) motor1 -= motor_velocity_increment;
+      if (motor1 - motor1_target > motor_increment) motor1 -= motor_increment;
       else motor1 = motor1_target;
     }
     roboclaw.ForwardBackwardM1(RC_ADDR, motor1);
@@ -292,16 +286,16 @@ void updateMotors()
   // M2
   if (motor2 != motor2_target)
   {
-    motor_counter = motor_counter_start;
+    motor_counter = MOTOR_COUNTER_START;
     if (motor2 < motor2_target)
     {
-      if (motor2_target - motor2 > motor_velocity_increment) motor2 += motor_velocity_increment;
+      if (motor2_target - motor2 > motor_increment) motor2 += motor_increment;
       else motor2 = motor2_target;
     }
     else
     if (motor2 > motor2_target)
     {
-      if (motor2 - motor2_target > motor_velocity_increment) motor2 -= motor_velocity_increment;
+      if (motor2 - motor2_target > motor_increment) motor2 -= motor_increment;
       else motor2 = motor2_target;
     }
     roboclaw.ForwardBackwardM2(RC_ADDR, motor2);
@@ -327,14 +321,14 @@ void driveEnable(boolean action)
 {
   if (action)
   {
-    pulsePin(MOTORS_PIN, 20);
+    pm();
     driveUART(true);
     lastDriveCommandTime = millis();
   }
   else
   {
     driveUART(false);
-    pulsePin(MOTORS_PIN, 20);
+    pm();
   }
 }
 
@@ -369,38 +363,71 @@ void CheckDriveCommandTimeout()
 
 //=======================================
 
-// 'version' command
-// ex: V
-void ver()
+// ex: sp00110 - set servo 00 to the minimum position
+// ex: sp15470 - set servo 15 to the maximum position
+void servo()
 {
-  Serial.println("V4");
+  uint8_t n;
+  uint16_t pulse;
+  
+  cmd = buf[1];
+  
+  if (cmd == 'p') // servo pulse
+  {
+    n = bctoi(2, 2);
+    pulse = bctoi16(4, 3);
+    if (n > 15) err();
+    else pwm.setPWM(n, 0, pulse);
+  }
+  else
+  {
+    nak();
+  }
 }
+
+//=======================================
+
+
+
+
+
+
+
+
+
+
+
+
+//=======================================
 
 // 'power' command
 void power()
 {
   cmd = buf[1];
-  if (cmd == 'A' || cmd == 'a') { pulsePin(AUX_PIN, 20); delay(3000); pulsePin(AUX_PIN, 20);  }
+  if (cmd == 'a') pa();
   else
-  if (cmd == 'M' || cmd == 'm') pulsePin(MOTORS_PIN, 20);
+  if (cmd == 'm') pm();
   else
-  if (cmd == 'U' || cmd == 'u') pulsePin(UPS_PIN, 5500);
+  if (cmd == 'u') pu();
   else
     nak();
 }
 
-// 'set parameter' command
-// ex: ST25 - set timeout = 2500ms
-// ex: SC1 - enable CRC
-void set()
+void pa()
 {
-  cmd = buf[1];
-  // command timeout
-  if (cmd == 'T' || cmd == 't') commandTimeout = bctoi(2, 2) * 100;
-  else
-  if (cmd == 'C' || cmd == 'c') doCRC = buf[2] == '1';
-  else
-    nak();
+  pulsePin(AUX_PIN, 20);
+  delay(3000);
+  pulsePin(AUX_PIN, 20);
+}
+
+void pm()
+{
+  pulsePin(MOTORS_PIN, 20);
+}
+
+void pu()
+{
+  pulsePin(UPS_PIN, 5500);
 }
 
 // 'battery voltage' command
@@ -412,7 +439,7 @@ void battery()
   delay(20);
   unsigned long voltage = (unsigned long)analogRead(0) * 625 >> 7;
   digitalWrite(BATTERY_PIN, LOW);
-  Serial.write('B');
+  Serial.write('b');
   Serial.println(voltage);
 }
 
@@ -432,9 +459,9 @@ void _write()
 void _read()
 {
   cmd = buf[1];
-  if (cmd == 'D' || cmd == 'd') dread();
+  if (cmd == 'd') dread();
   else
-  if (cmd == 'A' || cmd == 'a') aread();
+  if (cmd == 'a') aread();
   else
     nak();
 }
@@ -447,7 +474,7 @@ void dread()
   if (pin < 2 || pin > 10) { err(); return; }
   pinMode(pin, INPUT_PULLUP);
   unsigned int a = digitalRead(pin);
-  Serial.print("RD");
+  Serial.print("rd");
   Serial.print((unsigned int)pin);
   Serial.print("=");
   Serial.println(a);
@@ -461,7 +488,7 @@ void aread()
   byte pin = bctoi(2, 1);
   if (pin < 0 || pin > 7) { err(); return; }
   unsigned long a = (unsigned long)analogRead(pin) * 625 >> 7;
-  Serial.print("RA");
+  Serial.print("ra");
   Serial.print((unsigned int)pin);
   Serial.print("=");
   Serial.println(a);
@@ -484,6 +511,21 @@ void pulsePin(int pin, int ms)
 byte bctoi(byte index, byte count)
 {
   byte i = 0;
+  byte fin = index + count;
+  if (fin > BUF_SIZE) fin = BUF_SIZE;
+  while (buf[index] >= '0' && buf[index] <= '9' && index < fin)
+  {
+    i *= 10;
+    i += buf[index] - '0';
+    index++;
+  }
+  return i;
+}
+
+// converts string to number. reads 'count' chars starting at 'index' position in buffer
+uint16_t bctoi16(byte index, byte count)
+{
+  uint16_t i = 0;
   byte fin = index + count;
   if (fin > BUF_SIZE) fin = BUF_SIZE;
   while (buf[index] >= '0' && buf[index] <= '9' && index < fin)
