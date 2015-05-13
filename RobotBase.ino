@@ -1,13 +1,15 @@
 #include <BMSerial.h>
 #include <RoboClaw.h>
 #include <Wire.h>
-#include <Adafruit_PWMServoDriver.h>
+#include <PololuMaestro.h>
 
 #define LED_PIN 13
+#define SSC_RX_PIN 2
+#define SSC_TX_PIN 3
 
 // host communication //
-#define MAX_COMMAND 10
-#define BUF_SIZE 16
+#define MAX_COMMAND 16
+#define BUF_SIZE 18
 byte buf[BUF_SIZE];
 byte cmd = 0;
 byte bytes = 0;
@@ -34,7 +36,8 @@ unsigned long lastDriveCommandTime;
 unsigned long driveCommandTimeout = 60000;
 
 // servos
-Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+BMSerial ssc(SSC_RX_PIN, SSC_TX_PIN);
+MiniMaestro maestro(ssc);
 
 // propulsion vars
 #define MOTOR_COUNTER_START 3000
@@ -56,8 +59,6 @@ void setup()
   // unused pins
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
-  pinMode(2, INPUT_PULLUP);
-  pinMode(3, INPUT_PULLUP);
   pinMode(4, INPUT_PULLUP);
   pinMode(5, INPUT_PULLUP);
   pinMode(6, INPUT_PULLUP);
@@ -74,8 +75,7 @@ void setup()
   pulsePin(AUX_PIN, 20);
 
   // servo controller
-  pwm.begin();
-  pwm.setPWMFreq(50);  // servos run at ~50 Hz updates
+  ssc.begin(38400);
   
   // host communication //
   Serial.begin(38400);
@@ -188,11 +188,11 @@ void Execute()
   else
   if (cmd == 'p') power();
   else
-  if (cmd == 's') servo();
+  if (cmd == 's') servo_maestro();
   else
   if (cmd == 'b') battery();
   else
-  if (cmd == 'v') Serial.println("v5");
+  if (cmd == 'v') Serial.println("v7");
   else
   if (cmd == 'r') _read();
   else
@@ -223,9 +223,9 @@ void Execute()
 //=======================================
 
 // 'drive' command. both motors in one command
-// ex: DD127127 - drive differential. full forward
-// ex: DD064064 - drive differential. stop
-// ex: DD000000 - drive differential. full backward
+// ex: DD127127 - full forward
+// ex: DD064064 - stop
+// ex: DD000000 - full backward
 void drive()
 {
   cmd = buf[1];
@@ -363,21 +363,57 @@ void CheckDriveCommandTimeout()
 
 //=======================================
 
-// ex: sp00110 - set servo 00 to the minimum position
-// ex: sp15470 - set servo 15 to the maximum position
-void servo()
+// ex: sp002000 - set servo 00 to the min position
+// ex: sp159999 - set servo 15 to the max position
+void servo_maestro()
 {
-  uint8_t n;
-  uint16_t pulse;
+  uint8_t channel;
+  uint16_t value;
+  cmd = buf[1];
+  channel = bctoi(2, 2);
+  value = bctoi16(4, 4);
   
+  if (cmd == 'p') // servo position
+  {
+    if (channel < 18) maestro.setTarget(channel, value); else err();
+  }
+  if (cmd == 's') // servo speed
+  {
+    if (channel < 18) maestro.setSpeed(channel, value); else err();
+  }
+  if (cmd == 'a') // servo accel
+  {
+    if (channel < 18) maestro.setAcceleration(channel, value); else err();
+  }
+  else
+  {
+    nak();
+  }
+}
+
+// ex: sp000500 - set servo 00 to the min position
+// ex: sp152500 - set servo 15 to the max position
+void servo_ssc32()
+{
+  uint8_t channel;
+  uint16_t pos, time;
   cmd = buf[1];
   
   if (cmd == 'p') // servo pulse
   {
-    n = bctoi(2, 2);
-    pulse = bctoi16(4, 3);
-    if (n > 15) err();
-    else pwm.setPWM(n, 0, pulse);
+    channel = bctoi(2, 2);
+    pos = bctoi16(4, 4);
+    time = bctoi16(8, 4);
+    if (channel > 31) err();
+    else
+    {
+      ssc.print("#");
+      ssc.print(channel);
+      ssc.print("P");
+      ssc.print(pos);
+      if (time > 0) { ssc.print("T"); ssc.print(time); }
+      ssc.println("");
+    }
   }
   else
   {
