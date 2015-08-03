@@ -4,8 +4,16 @@
 #include <PololuMaestro.h>
 
 #define LED_PIN 13
+#define RC_RX_PIN 12
+#define RC_TX_PIN 11
 #define SSC_RX_PIN 2
 #define SSC_TX_PIN 3
+// power management //
+#define SERVO_PIN 6
+#define AUX_PIN 7
+#define MOTORS_PIN 8
+#define UPS_PIN 9
+#define BATTERY_PIN 10
 
 // host communication //
 #define MAX_COMMAND 16
@@ -15,12 +23,6 @@ byte cmd = 0;
 byte bytes = 0;
 byte crc = 0;
 
-// power management //
-#define AUX_PIN 7
-#define MOTORS_PIN 8
-#define UPS_PIN 9
-#define BATTERY_PIN 10
-
 // common vars //
 unsigned long lastCommandTime;
 unsigned long commandTimeout = 2500;
@@ -28,18 +30,10 @@ boolean IsConnected = false;
 
 // RoboClaw //
 #define RC_ADDR 0x80
-#define RC_RX_PIN 12
-#define RC_TX_PIN 11
 RoboClaw roboclaw(RC_RX_PIN, RC_TX_PIN);
 boolean driveEnabled = false;
 unsigned long lastDriveCommandTime;
-unsigned long driveCommandTimeout = 60000;
-
-// servos
-BMSerial ssc(SSC_RX_PIN, SSC_TX_PIN);
-MiniMaestro maestro(ssc);
-
-// propulsion vars
+unsigned long driveCommandTimeout = 20000;
 #define MOTOR_COUNTER_START 3000
 #define MOTOR_TARGET_MAX 127
 #define MOTOR_VELOCITY_0 64
@@ -52,37 +46,40 @@ byte motor2_target = MOTOR_VELOCITY_0;
 byte motor_increment = 5;
 unsigned int motor_counter = 0;
 
+// servo controller
+BMSerial ssc(SSC_RX_PIN, SSC_TX_PIN);
+MiniMaestro maestro(ssc);
+
 //=======================================
 
 void setup() 
 {
-  // unused pins
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
-  pinMode(4, INPUT_PULLUP);
-  pinMode(5, INPUT_PULLUP);
-  pinMode(6, INPUT_PULLUP);
   
   // power management pins //
+  pinMode(SERVO_PIN, OUTPUT);
   pinMode(AUX_PIN, OUTPUT);
   pinMode(MOTORS_PIN, OUTPUT);
   pinMode(UPS_PIN, OUTPUT);
   pinMode(BATTERY_PIN, OUTPUT);
+  digitalWrite(SERVO_PIN, LOW);
   digitalWrite(AUX_PIN, LOW);
   digitalWrite(MOTORS_PIN, LOW);
   digitalWrite(UPS_PIN, LOW);
   digitalWrite(BATTERY_PIN, LOW);
+  // enable AUX power
   pulsePin(AUX_PIN, 20);
 
-  // servo controller
-  ssc.begin(38400);
-  
   // host communication //
   Serial.begin(38400);
   
-  // motor driver //
+  // motor driver setup //
   driveUART(true);
   driveUART(false);
+  
+  // ssc setup //
+  sscUART(false);
 }
 
 //=======================================
@@ -192,7 +189,7 @@ void Execute()
   else
   if (cmd == 'b') battery();
   else
-  if (cmd == 'v') Serial.println("v7");
+  if (cmd == 'v') Serial.println("v8");
   else
   if (cmd == 'r') _read();
   else
@@ -222,15 +219,15 @@ void Execute()
 
 //=======================================
 
-// 'drive' command. both motors in one command
-// ex: DD127127 - full forward
-// ex: DD064064 - stop
-// ex: DD000000 - full backward
+// 'drive' command
+// ex: dm127127 - full forward
+// ex: dm064064 - stop
+// ex: dm000000 - full backward
 void drive()
 {
   cmd = buf[1];
   
-  if (cmd == 'd') // drive differential
+  if (cmd == 'm') // drive motors
   {
     motor1_target = bctoi(2, 3);
     motor2_target = bctoi(5, 3);
@@ -238,18 +235,11 @@ void drive()
     if (motor2_target > MOTOR_TARGET_MAX) motor2_target = MOTOR_TARGET_MAX;
   }
   else
-  if (cmd == 'r') // drive reset
-  {
-    driveUART(false);
-    pm();
-    delay(100);
-    pm();
-    driveUART(true);
-  }
+  if (cmd == 'r') driveReset();
   else
-  if (cmd == 'e') driveUART(true);
+  if (cmd == 'e') driveEnable(true);
   else
-  if (cmd == 'o') driveUART(false);
+  if (cmd == 'd') driveEnable(false);
   else
   if (cmd == 'i') motor_increment = bctoi(2, 2);
   else
@@ -340,6 +330,13 @@ void driveUART(boolean action)
   driveEnabled = action;
 }
 
+void driveReset()
+{
+  driveEnable(false);
+  delay(100);
+  driveEnable(true);
+}
+  
 void CheckDriveCommandTimeout()
 {
   if (driveCommandTimeout == 0) return;
@@ -373,22 +370,55 @@ void servo_maestro()
   channel = bctoi(2, 2);
   value = bctoi16(4, 4);
   
-  if (cmd == 'p') // servo position
+  if (channel >= 18) // channels 18 and above mean all servos
   {
-    if (channel < 18) maestro.setTarget(channel, value); else err();
+    if (cmd == 's') // servo speed
+    {
+      for (channel = 0; channel < 18; channel++) maestro.setSpeed(channel, value);
+    }
+    else
+    if (cmd == 'a') // servo accel
+    {
+      for (channel = 0; channel < 18; channel++) maestro.setAcceleration(channel, value);
+    }
+    else
+      nak();
+    return;
   }
-  if (cmd == 's') // servo speed
+  
+  if (cmd == 'p') maestro.setTarget(channel, value); // servo position
+  else
+  if (cmd == 's') maestro.setSpeed(channel, value); // servo speed
+  else
+  if (cmd == 'a') maestro.setAcceleration(channel, value); // servo accel
+  else
+  if (cmd == 'e') sscEnable(true); // enable servo controller
+  else
+  if (cmd == 'd') sscEnable(false); // disable servo controller
+  else
+    nak();
+}
+
+// enable/disable servo controller communication and power
+void sscEnable(boolean action)
+{
+  if (action)
   {
-    if (channel < 18) maestro.setSpeed(channel, value); else err();
-  }
-  if (cmd == 'a') // servo accel
-  {
-    if (channel < 18) maestro.setAcceleration(channel, value); else err();
+    digitalWrite(SERVO_PIN, HIGH);
+    sscUART(true);
   }
   else
   {
-    nak();
+    sscUART(false);
+    digitalWrite(SERVO_PIN, LOW);
   }
+}
+
+// enable/disable servo controller communication
+void sscUART(boolean action)
+{
+  if (action) ssc.begin(38400);
+  else ssc.end();
 }
 
 // ex: sp000500 - set servo 00 to the min position
@@ -457,14 +487,10 @@ void pa()
 }
 
 void pm()
-{
-  pulsePin(MOTORS_PIN, 20);
-}
+{ pulsePin(MOTORS_PIN, 20); }
 
 void pu()
-{
-  pulsePin(UPS_PIN, 5500);
-}
+{ pulsePin(UPS_PIN, 5500); }
 
 // 'battery voltage' command
 // ex: B
