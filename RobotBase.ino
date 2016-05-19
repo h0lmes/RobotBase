@@ -6,14 +6,12 @@
 #define LED_PIN 13
 #define RC_RX_PIN 12
 #define RC_TX_PIN 11
-#define SSC_RX_PIN 2
-#define SSC_TX_PIN 3
+#define SSC_RX_PIN 10
+#define SSC_TX_PIN 9
 // power management //
 #define SERVO_PIN 6
-#define AUX_PIN 7
-#define MOTORS_PIN 8
-#define UPS_PIN 9
-#define BATTERY_PIN 10
+#define POWER_PIN 7
+#define MOTOR_PIN 8
 
 // host communication //
 #define MAX_COMMAND 16
@@ -59,18 +57,12 @@ void setup()
   
   // power management pins //
   pinMode(SERVO_PIN, OUTPUT);
-  pinMode(AUX_PIN, OUTPUT);
-  pinMode(MOTORS_PIN, OUTPUT);
-  pinMode(UPS_PIN, OUTPUT);
-  pinMode(BATTERY_PIN, OUTPUT);
+  pinMode(POWER_PIN, OUTPUT);
+  pinMode(MOTOR_PIN, OUTPUT);
   digitalWrite(SERVO_PIN, LOW);
-  digitalWrite(AUX_PIN, LOW);
-  digitalWrite(MOTORS_PIN, LOW);
-  digitalWrite(UPS_PIN, LOW);
-  digitalWrite(BATTERY_PIN, LOW);
-  // enable AUX power
-  pulsePin(AUX_PIN, 20);
-
+  digitalWrite(POWER_PIN, LOW);
+  digitalWrite(MOTOR_PIN, LOW);
+  
   // host communication //
   Serial.begin(38400);
   
@@ -311,14 +303,18 @@ void driveEnable(boolean action)
 {
   if (action)
   {
-    pm();
-    driveUART(true);
-    lastDriveCommandTime = millis();
+    if (!driveEnabled) {
+      pm();
+      driveUART(true);
+      lastDriveCommandTime = millis();
+    }
   }
   else
   {
-    driveUART(false);
-    pm();
+    if (driveEnabled) {
+      driveUART(false);
+      pm();
+    }
   }
 }
 
@@ -370,7 +366,7 @@ void servo_maestro()
   channel = bctoi(2, 2);
   value = bctoi16(4, 4);
   
-  if (channel >= 18) // channels 18 and above mean all servos
+  if (channel >= 18) // channels 18 and above = all servos
   {
     if (cmd == 's') // servo speed
     {
@@ -470,40 +466,35 @@ void servo_ssc32()
 void power()
 {
   cmd = buf[1];
-  if (cmd == 'a') pa();
-  else
   if (cmd == 'm') pm();
   else
-  if (cmd == 'u') pu();
+  if (cmd == 'p') pp();
   else
     nak();
 }
 
-void pa()
+void pm()
+{ pulsePin(MOTOR_PIN, 20); }
+
+void pp()
 {
-  pulsePin(AUX_PIN, 20);
-  delay(3000);
-  pulsePin(AUX_PIN, 20);
+  pulsePin(POWER_PIN, 20);
+  if (driveEnabled) pm();
 }
 
-void pm()
-{ pulsePin(MOTORS_PIN, 20); }
-
-void pu()
-{ pulsePin(UPS_PIN, 5500); }
+//=======================================
 
 // 'battery voltage' command
 // ex: B
 // result in mV
 void battery()
 {
-  digitalWrite(BATTERY_PIN, HIGH);
-  delay(20);
-  unsigned long voltage = (unsigned long)analogRead(0) * 625 >> 7;
-  digitalWrite(BATTERY_PIN, LOW);
+  unsigned long voltage = (unsigned long)14800;
   Serial.write('b');
   Serial.println(voltage);
 }
+
+//=======================================
 
 // 'digitalWrite' command
 // ex: W031 - set pin 3 HIGH, W100 - set pin 10 LOW
@@ -558,7 +549,13 @@ void aread()
 
 //=======================================
 //
+//
+//
+//
 // helper functions
+//
+//
+//
 //
 //=======================================
 
