@@ -2,6 +2,7 @@
 #include <RoboClaw.h>
 #include <Wire.h>
 #include <PololuMaestro.h>
+#include <Adafruit_INA219.h>
 
 #define LED_PIN 13
 #define RC_RX_PIN 12
@@ -20,6 +21,8 @@ byte buf[BUF_SIZE];
 byte cmd = 0;
 byte bytes = 0;
 byte crc = 0;
+
+Adafruit_INA219 ina219;
 
 // common vars //
 unsigned long lastCommandTime;
@@ -69,6 +72,9 @@ void setup()
   // motor driver setup //
   driveUART(true);
   driveUART(false);
+  
+  // INA219 setup //
+  ina219.begin();
   
   // ssc setup //
   sscUART(false);
@@ -463,23 +469,20 @@ void servo_ssc32()
 //=======================================
 
 // 'power' command
-void power()
-{
+void power() {
   cmd = buf[1];
   if (cmd == 'm') pm();
   else
-  if (cmd == 'p') pp();
-  else
-    nak();
+    pp();
 }
 
-void pm()
-{ pulsePin(MOTOR_PIN, 20); }
+void pm() {
+  pulsePin(MOTOR_PIN, 20);
+}
 
-void pp()
-{
-  pulsePin(POWER_PIN, 20);
+void pp() {
   if (driveEnabled) pm();
+  pulsePin(POWER_PIN, 20);
 }
 
 //=======================================
@@ -489,9 +492,14 @@ void pp()
 // result in mV
 void battery()
 {
-  unsigned long voltage = (unsigned long)14800;
+  float shuntvoltage = ina219.getShuntVoltage_mV();
+  float busvoltage = ina219.getBusVoltage_V();
+  float current_mA = ina219.getCurrent_mA();
+  unsigned long voltage = (unsigned long)(busvoltage * 1000 + shuntvoltage);
   Serial.write('b');
   Serial.println(voltage);
+  Serial.write('a');
+  Serial.println(current_mA);
 }
 
 //=======================================
