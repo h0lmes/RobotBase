@@ -187,7 +187,7 @@ void Execute()
   else
   if (cmd == 'b') battery();
   else
-  if (cmd == 'v') Serial.println("v8");
+  if (cmd == 'v') Serial.println("v9");
   else
   if (cmd == 'r') _read();
   else
@@ -469,11 +469,11 @@ void servo_ssc32()
 //=======================================
 
 // 'power' command
-void power() {
+void power()
+{
   cmd = buf[1];
   if (cmd == 'm') pm();
-  else
-    pp();
+  else pp();
 }
 
 void pm() {
@@ -481,20 +481,18 @@ void pm() {
 }
 
 void pp() {
-  if (driveEnabled) pm();
   pulsePin(POWER_PIN, 20);
 }
 
 //=======================================
 
 // 'battery voltage' command
-// ex: B
-// result in mV
+// result in mV and mA
 void battery()
 {
   float shuntvoltage = ina219.getShuntVoltage_mV();
   float busvoltage = ina219.getBusVoltage_V();
-  float current_mA = ina219.getCurrent_mA();
+  int current_mA = int(ina219.getCurrent_mA());
   unsigned long voltage = (unsigned long)(busvoltage * 1000 + shuntvoltage);
   Serial.write('b');
   Serial.println(voltage);
@@ -505,7 +503,8 @@ void battery()
 //=======================================
 
 // 'digitalWrite' command
-// ex: W031 - set pin 3 HIGH, W100 - set pin 10 LOW
+// W031 - set pin 3 HIGH
+// W100 - set pin 10 LOW
 void _write()
 {
   byte pin = bctoi(1, 2);
@@ -528,7 +527,7 @@ void _read()
 }
 
 // 'digitalRead' command
-// ex: RD5 or RD05 or RD10
+// RD5 or RD05 - read pin 5
 void dread()
 {
   byte pin = bctoi(2, 2);
@@ -542,7 +541,7 @@ void dread()
 }
 
 // 'analogRead' command
-// ex: RA0
+// RA0 - read analog pin 0
 // result in mV
 void aread()
 {
