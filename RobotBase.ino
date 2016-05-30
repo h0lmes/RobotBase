@@ -10,9 +10,10 @@
 #define SSC_RX_PIN 10
 #define SSC_TX_PIN 9
 // power management //
-#define SERVO_PIN 6
-#define POWER_PIN 7
-#define MOTOR_PIN 8
+#define SERVO_PIN 5
+#define POWER_PIN 6
+#define MOTOR_ENABLE_PIN 7
+#define MOTOR_DISABLE_PIN 8
 
 // host communication //
 #define MAX_COMMAND 16
@@ -58,13 +59,16 @@ void setup()
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   
-  // power management pins //
+  // power management //
   pinMode(SERVO_PIN, OUTPUT);
+  pinMode(MOTOR_ENABLE_PIN, OUTPUT);
   pinMode(POWER_PIN, OUTPUT);
-  pinMode(MOTOR_PIN, OUTPUT);
+  pinMode(MOTOR_DISABLE_PIN, OUTPUT);
   digitalWrite(SERVO_PIN, LOW);
+  digitalWrite(MOTOR_ENABLE_PIN, LOW);
   digitalWrite(POWER_PIN, LOW);
-  digitalWrite(MOTOR_PIN, LOW);
+  digitalWrite(MOTOR_DISABLE_PIN, LOW);
+  motor_power(false);
   
   // host communication //
   Serial.begin(38400);
@@ -151,6 +155,7 @@ void CheckCommandTimeout()
 void OnDisconnected()
 {
   driveStop();
+  driveEnable(false);
   IsConnected = false;
 }
 
@@ -204,6 +209,30 @@ void Execute()
 
 //=======================================
 
+// 'power off' command
+void power()
+{
+  pulsePin(POWER_PIN, 20);
+}
+
+//=======================================
+
+// 'battery voltage' command
+// result in mV and mA
+void battery()
+{
+  float shuntvoltage = ina219.getShuntVoltage_mV();
+  float busvoltage = ina219.getBusVoltage_V();
+  int current_mA = int(ina219.getCurrent_mA());
+  unsigned long voltage = (unsigned long)(busvoltage * 1000 + shuntvoltage);
+  Serial.write('b');
+  Serial.println(voltage);
+  Serial.write('a');
+  Serial.println(current_mA);
+}
+
+//=======================================
+
 
 
 
@@ -234,10 +263,6 @@ void drive()
   }
   else
   if (cmd == 'r') driveReset();
-  else
-  if (cmd == 'e') driveEnable(true);
-  else
-  if (cmd == 'd') driveEnable(false);
   else
   if (cmd == 'i') motor_increment = bctoi(2, 2);
   else
@@ -304,23 +329,26 @@ void driveStop()
   lastDriveCommandTime = millis();
 }
 
+void driveReset()
+{
+  driveEnable(false);
+  delay(100);
+  driveEnable(true);
+}
+
 // enable/disable motor driver communication and power
 void driveEnable(boolean action)
 {
   if (action)
   {
-    if (!driveEnabled) {
-      pm();
+      motor_power(true);
       driveUART(true);
       lastDriveCommandTime = millis();
-    }
   }
   else
   {
-    if (driveEnabled) {
       driveUART(false);
-      pm();
-    }
+      motor_power(false);
   }
 }
 
@@ -332,11 +360,15 @@ void driveUART(boolean action)
   driveEnabled = action;
 }
 
-void driveReset()
+void motor_power(boolean action)
 {
-  driveEnable(false);
-  delay(100);
-  driveEnable(true);
+  if (action)
+  {
+    pulsePin(MOTOR_DISABLE_PIN, 20);
+    delay(20);
+    pulsePin(MOTOR_ENABLE_PIN, 20);
+  }
+  else pulsePin(MOTOR_DISABLE_PIN, 20);
 }
   
 void CheckDriveCommandTimeout()
@@ -465,40 +497,6 @@ void servo_ssc32()
 
 
 
-
-//=======================================
-
-// 'power' command
-void power()
-{
-  cmd = buf[1];
-  if (cmd == 'm') pm();
-  else pp();
-}
-
-void pm() {
-  pulsePin(MOTOR_PIN, 20);
-}
-
-void pp() {
-  pulsePin(POWER_PIN, 20);
-}
-
-//=======================================
-
-// 'battery voltage' command
-// result in mV and mA
-void battery()
-{
-  float shuntvoltage = ina219.getShuntVoltage_mV();
-  float busvoltage = ina219.getBusVoltage_V();
-  int current_mA = int(ina219.getCurrent_mA());
-  unsigned long voltage = (unsigned long)(busvoltage * 1000 + shuntvoltage);
-  Serial.write('b');
-  Serial.println(voltage);
-  Serial.write('a');
-  Serial.println(current_mA);
-}
 
 //=======================================
 
