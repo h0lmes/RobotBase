@@ -3,6 +3,7 @@
 #include <Wire.h>
 #include <PololuMaestro.h>
 #include <Adafruit_INA219.h>
+#include <TM1650.h>
 
 #define LED_PIN 13
 #define RC_RX_PIN 12
@@ -24,11 +25,15 @@ byte bytes = 0;
 byte crc = 0;
 
 Adafruit_INA219 ina219;
+TM1650 tm;
 
 // common vars //
 unsigned long lastCommandTime;
 unsigned long commandTimeout = 2500;
 boolean IsConnected = false;
+unsigned long lastTmTime = 0;
+int tmMode = 0;
+#define DISPLAY_ALTER_INTERVAL 1500
 
 // RoboClaw //
 #define RC_ADDR 0x80
@@ -70,6 +75,14 @@ void setup()
   digitalWrite(MOTOR_DISABLE_PIN, LOW);
   motor_power(false);
   
+  // TM1650 display setup
+  Wire.begin();
+  tm.init();
+  tm.displayOff();
+  tm.displayString("INIT");
+  tm.setBrightness(1);
+  tm.displayOn();
+  
   // host communication //
   Serial.begin(38400);
   
@@ -91,11 +104,67 @@ void loop()
   // serial input
   ReadSerial();
   if (IsConnected) CheckCommandTimeout();
+  else UpdateVA();
   if (driveEnabled) CheckDriveCommandTimeout();
   
   // motors
   if (motor_counter > 0) motor_counter--;
   if (motor_counter == 0) updateMotors();
+}
+
+void UpdateVA()
+{
+  unsigned long tmTime = millis();
+  if (tmTime < lastTmTime) lastTmTime = 0;
+  if (tmTime - lastTmTime > DISPLAY_ALTER_INTERVAL)
+  {
+    if (tmMode == 0)
+    {
+      float shuntvoltage = ina219.getShuntVoltage_mV();
+      float busvoltage = ina219.getBusVoltage_V();
+      int voltage = (int)(busvoltage * 100 + shuntvoltage / 10);
+      displayInt(voltage, 2);
+      tmMode = 1;
+    }
+    else
+    if (tmMode == 1)
+    {
+      int mA = abs(int(ina219.getCurrent_mA()));
+      displayInt(mA, 1);
+      tmMode = 0;
+    }
+    
+    lastTmTime = tmTime;
+  }
+}
+
+void displayInt(int value, int dot)
+{
+    char c[4];
+    c[0] = '0' + int(value / 1000);
+    c[1] = '0' + int(value % 1000 / 100);
+    c[2] = '0' + int(value % 100 / 10);
+    c[3] = '0' + int(value % 10);
+    if (dot == 1) c[0] = c[0] | 0b10000000;
+    else
+    if (dot == 2) c[1] = c[1] | 0b10000000;
+    else
+    if (dot == 3) c[2] = c[2] | 0b10000000;
+    tm.displayString(c);
+}
+
+void ina()
+{
+  uint16_t reg;
+  cmd = buf[1]; 
+  if (cmd == '0') ina219.wireReadRegister(0, &reg);
+  else if (cmd == '1') ina219.wireReadRegister(1, &reg);
+  else if (cmd == '2') ina219.wireReadRegister(2, &reg);
+  else if (cmd == '3') ina219.wireReadRegister(3, &reg);
+  else if (cmd == '4') ina219.wireReadRegister(4, &reg);
+  else if (cmd == '5') ina219.wireReadRegister(5, &reg);
+  Serial.print('i');
+  Serial.println(reg);
 }
 
 //=======================================
@@ -163,6 +232,7 @@ void OnValidCommand()
 {
   IsConnected = true;
   lastCommandTime = millis();
+  tm.displayString("CONN");
 }
 
 //=======================================
@@ -188,9 +258,11 @@ void Execute()
   else
   if (cmd == 'p') power();
   else
-  if (cmd == 's') servo_maestro();
+  if (cmd == 's') servo();
   else
   if (cmd == 'b') battery();
+  else
+  if (cmd == 'i') ina();
   else
   if (cmd == 'v') Serial.println("v9");
   else
@@ -252,8 +324,7 @@ void battery()
 // ex: dm000000 - full backward
 void drive()
 {
-  cmd = buf[1];
-  
+  cmd = buf[1]; 
   if (cmd == 'm') // drive motors
   {
     motor1_target = bctoi(2, 3);
@@ -263,12 +334,7 @@ void drive()
   }
   else
   if (cmd == 'r') driveReset();
-  else
-  if (cmd == 'i') motor_increment = bctoi(2, 2);
-  else
-  {
-    nak();
-  }
+  else nak();
 }
 
 // update motor velocities
@@ -396,7 +462,7 @@ void CheckDriveCommandTimeout()
 
 // ex: sp002000 - set servo 00 to the min position
 // ex: sp159999 - set servo 15 to the max position
-void servo_maestro()
+void servo()
 {
   uint8_t channel;
   uint16_t value;
@@ -453,36 +519,6 @@ void sscUART(boolean action)
 {
   if (action) ssc.begin(38400);
   else ssc.end();
-}
-
-// ex: sp000500 - set servo 00 to the min position
-// ex: sp152500 - set servo 15 to the max position
-void servo_ssc32()
-{
-  uint8_t channel;
-  uint16_t pos, time;
-  cmd = buf[1];
-  
-  if (cmd == 'p') // servo pulse
-  {
-    channel = bctoi(2, 2);
-    pos = bctoi16(4, 4);
-    time = bctoi16(8, 4);
-    if (channel > 31) err();
-    else
-    {
-      ssc.print("#");
-      ssc.print(channel);
-      ssc.print("P");
-      ssc.print(pos);
-      if (time > 0) { ssc.print("T"); ssc.print(time); }
-      ssc.println("");
-    }
-  }
-  else
-  {
-    nak();
-  }
 }
 
 //=======================================
