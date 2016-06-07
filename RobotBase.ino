@@ -104,8 +104,8 @@ void loop()
   // serial input
   ReadSerial();
   if (IsConnected) CheckCommandTimeout();
-  else UpdateVA();
   if (driveEnabled) CheckDriveCommandTimeout();
+  UpdateVA();
   
   // motors
   if (motor_counter > 0) motor_counter--;
@@ -131,6 +131,13 @@ void UpdateVA()
     {
       int mA = abs(int(ina219.getCurrent_mA()));
       displayInt(mA, 1);
+      if (IsConnected) tmMode = 2;
+      else tmMode = 0;
+    }
+    else
+    if (tmMode == 2)
+    {
+      tm.displayString("CONN");
       tmMode = 0;
     }
     
@@ -151,20 +158,6 @@ void displayInt(int value, int dot)
     else
     if (dot == 3) c[2] = c[2] | 0b10000000;
     tm.displayString(c);
-}
-
-void ina()
-{
-  uint16_t reg;
-  cmd = buf[1]; 
-  if (cmd == '0') ina219.wireReadRegister(0, &reg);
-  else if (cmd == '1') ina219.wireReadRegister(1, &reg);
-  else if (cmd == '2') ina219.wireReadRegister(2, &reg);
-  else if (cmd == '3') ina219.wireReadRegister(3, &reg);
-  else if (cmd == '4') ina219.wireReadRegister(4, &reg);
-  else if (cmd == '5') ina219.wireReadRegister(5, &reg);
-  Serial.print('i');
-  Serial.println(reg);
 }
 
 //=======================================
@@ -232,7 +225,6 @@ void OnValidCommand()
 {
   IsConnected = true;
   lastCommandTime = millis();
-  tm.displayString("CONN");
 }
 
 //=======================================
@@ -289,18 +281,53 @@ void power()
 
 //=======================================
 
+
+
+
+
+// power sensing
+
+
+
+
+
+//=======================================
+
 // 'battery voltage' command
 // result in mV and mA
 void battery()
 {
   float shuntvoltage = ina219.getShuntVoltage_mV();
   float busvoltage = ina219.getBusVoltage_V();
-  int current_mA = int(ina219.getCurrent_mA());
-  unsigned long voltage = (unsigned long)(busvoltage * 1000 + shuntvoltage);
+  int current_mA;
+  current_mA = int(ina219.getCurrent_mA());
+  int voltage;
+  voltage = (int)(busvoltage * 1000 + shuntvoltage);
   Serial.write('b');
   Serial.println(voltage);
   Serial.write('a');
   Serial.println(current_mA);
+}
+
+// INA219 control commands
+void ina()
+{
+  uint16_t reg = 0;
+  cmd = buf[1]; 
+  if (cmd == '0') ina219.wireReadRegister(0, &reg);
+  else if (cmd == '1') ina219.wireReadRegister(1, &reg);
+  else if (cmd == '2') ina219.wireReadRegister(2, &reg);
+  else if (cmd == '3') ina219.wireReadRegister(3, &reg);
+  else if (cmd == '4') ina219.wireReadRegister(4, &reg);
+  else if (cmd == '5') ina219.wireReadRegister(5, &reg);
+  else if (cmd == 'с')
+  {
+    uint16_t val = bctoi16(2, 6);
+    ina219.wireWriteRegister(0, val);
+    ina219.wireReadRegister(0, &reg);
+  }
+  Serial.print('i');
+  Serial.println(reg);
 }
 
 //=======================================
@@ -309,8 +336,7 @@ void battery()
 
 
 
-
-
+// control motors
 
 
 
