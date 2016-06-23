@@ -44,7 +44,7 @@ unsigned long lastTmTime = 0;
 int tmMode = 0;
 
 // common vars //
-#define COMMAND_TIMEOUT 1200
+#define COMMAND_TIMEOUT 2000
 unsigned long lastCommandTime;
 boolean IsConnected = false;
 
