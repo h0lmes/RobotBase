@@ -6,8 +6,8 @@
 #include <TM1650.h>
 
 #define LED_PIN 13
-#define RC_RX_PIN 12
-#define RC_TX_PIN 11
+#define DRIVER_RX_PIN 12
+#define DRIVER_TX_PIN 11
 #define SSC_RX_PIN 10
 #define SSC_TX_PIN 9
 // power management //
@@ -16,28 +16,41 @@
 #define MOTOR_ENABLE_PIN 7
 #define MOTOR_DISABLE_PIN 8
 
+// uptime //
+byte NewSecond = 0;
+byte HalfSecond = 0;
+unsigned long uptimeSeconds = 0;
+
 // host communication //
-#define MAX_COMMAND 16
-#define BUF_SIZE 18
-byte buf[BUF_SIZE];
+#define MAX_COMMAND_LENGTH 16
+#define COMMAND_BUFFER_SIZE 18
+byte buf[COMMAND_BUFFER_SIZE];
 byte cmd = 0;
-byte bytes = 0;
+byte bytesInBuffer = 0;
 byte crc = 0;
 
+// power measurment //
+#define AMPS_SIZE 30
+#define AMPS_INTERVAL 50
+int amps[AMPS_SIZE];
+byte ampsIndex = 0;
+unsigned long lastAmpsTime = 0;
+long uAh = 0;
 Adafruit_INA219 ina219;
+
+#define DISPLAY_ALTER_INTERVAL 1500
 TM1650 tm;
+unsigned long lastTmTime = 0;
+int tmMode = 0;
 
 // common vars //
 unsigned long lastCommandTime;
 unsigned long commandTimeout = 2500;
 boolean IsConnected = false;
-unsigned long lastTmTime = 0;
-int tmMode = 0;
-#define DISPLAY_ALTER_INTERVAL 1500
 
 // RoboClaw //
 #define RC_ADDR 0x80
-RoboClaw roboclaw(RC_RX_PIN, RC_TX_PIN);
+RoboClaw roboclaw(DRIVER_RX_PIN, DRIVER_TX_PIN);
 boolean driveEnabled = false;
 unsigned long lastDriveCommandTime;
 unsigned long driveCommandTimeout = 20000;
@@ -73,7 +86,7 @@ void setup()
   digitalWrite(MOTOR_ENABLE_PIN, LOW);
   digitalWrite(POWER_PIN, LOW);
   digitalWrite(MOTOR_DISABLE_PIN, LOW);
-  motor_power(false);
+  motorPower(false);
   
   // TM1650 display setup
   Wire.begin();
@@ -101,18 +114,74 @@ void setup()
 
 void loop()
 {
+  MaintainUptime();
+  
   // serial input
   ReadSerial();
   if (IsConnected) CheckCommandTimeout();
   if (driveEnabled) CheckDriveCommandTimeout();
-  UpdateVA();
+  ReadAmps();
+  DisplayVA();
   
   // motors
   if (motor_counter > 0) motor_counter--;
   if (motor_counter == 0) updateMotors();
 }
 
-void UpdateVA()
+void MaintainUptime()
+{
+  if (millis() % 1000 <= 500 && HalfSecond == 0)
+  {
+    NewSecond = 1;
+    HalfSecond = 1;
+  }
+
+  if (millis() % 1000 > 500) HalfSecond = 0;
+
+  if (NewSecond == 1)
+  {
+    uptimeSeconds++;
+    NewSecond = 0;
+  }
+} 
+
+//=======================================
+
+//          in-robot Volts/Amps measurment
+
+//=======================================
+
+void ReadAmps()
+{
+  unsigned long ampsTime = millis();
+  if (ampsTime < lastAmpsTime) lastAmpsTime = 0;
+  if (ampsTime - lastAmpsTime > AMPS_INTERVAL)
+  {
+    lastAmpsTime = ampsTime;
+    amps[ampsIndex] = int(ina219.getCurrent_mA()); 
+    ampsIndex++;
+    if (ampsIndex >= AMPS_SIZE)
+    {
+      ampsIndex = 0;
+      UpdateUAh();
+    }
+  }
+}
+
+int getAvgAmps()
+{
+  long ampsSum = 0;
+  for (int i = 0; i < AMPS_SIZE; i++) ampsSum += amps[i];
+  return int(ampsSum / AMPS_SIZE);
+}
+
+void UpdateUAh()
+{
+  int mA = getAvgAmps();
+  uAh += int(mA * 5 / 12);
+}
+
+void DisplayVA()
 {
   unsigned long tmTime = millis();
   if (tmTime < lastTmTime) lastTmTime = 0;
@@ -120,17 +189,13 @@ void UpdateVA()
   {
     if (tmMode == 0)
     {
-      float shuntvoltage = ina219.getShuntVoltage_mV();
-      float busvoltage = ina219.getBusVoltage_V();
-      int voltage = (int)(busvoltage * 100 + shuntvoltage / 10);
-      displayInt(voltage, 2);
+      displayVolts();
       tmMode = 1;
     }
     else
     if (tmMode == 1)
     {
-      int mA = abs(int(ina219.getCurrent_mA()));
-      displayInt(mA, 1);
+      displayAmps();
       if (IsConnected) tmMode = 2;
       else tmMode = 0;
     }
@@ -143,6 +208,18 @@ void UpdateVA()
     
     lastTmTime = tmTime;
   }
+}
+
+void displayVolts()
+{
+    int voltage = int(ina219.getBusVoltage_V() * 100);
+    displayInt(voltage, 2);
+}
+
+void displayAmps()
+{
+  int mA = getAvgAmps();
+  displayInt(mA, 1);
 }
 
 void displayInt(int value, int dot)
@@ -162,28 +239,35 @@ void displayInt(int value, int dot)
 
 //=======================================
 
+
+
+//=======================================
+
 // read serial data into buffer. execute command
 void ReadSerial()
 {
+  byte b;
   while (Serial.available())
   {
-    buf[bytes] = Serial.read();
-    if (buf[bytes] == 10 || buf[bytes] == 13 || bytes >= MAX_COMMAND)
+    b = Serial.read();
+    buf[bytesInBuffer] = b;
+    if (b == 10 || b == 13 || bytesInBuffer >= MAX_COMMAND_LENGTH)
     {
-      if (bytes > 0) Execute();
+      if (bytesInBuffer > 0) Execute();
+      bytesInBuffer = 0; // empty input buffer (only one command at a time)
       return;
     }
-    bytes++;
+    bytesInBuffer++;
   }
 }
 
 boolean crc8ok()
 {
   crc = 0;
-  for (byte i = 0; i < bytes - 1; i++) crc8(buf[i]);
-  if (crc == buf[bytes - 1]) return true;
+  for (byte i = 0; i < bytesInBuffer - 1; i++) crc8(buf[i]);
+  if (crc == buf[bytesInBuffer - 1]) return true;
   // if error
-  bytes = 0; // empty input buffer
+  bytesInBuffer = 0; // empty input buffer
   driveStop(); // disable motors
   Serial.println("crc"); // report CRC error
   return false;
@@ -242,7 +326,6 @@ void nak()
 // the second is a subcommand
 void Execute()
 {
-  bytes = 0; // empty input buffer (only one command at a time)
   cmd = buf[0];
   if (cmd == 0 || cmd == 32) return;
   
@@ -252,7 +335,7 @@ void Execute()
   else
   if (cmd == 's') servo();
   else
-  if (cmd == 'b') battery();
+  if (cmd == 't') telemetry(); // reply contains a-amps, b-volts, c-charge, u-uptime
   else
   if (cmd == 'i') ina();
   else
@@ -273,19 +356,11 @@ void Execute()
 
 //=======================================
 
-// 'power off' command
-void power()
-{
-  pulsePin(POWER_PIN, 20);
-}
-
-//=======================================
 
 
 
 
-
-// power sensing
+// telemetry
 
 
 
@@ -293,20 +368,19 @@ void power()
 
 //=======================================
 
-// 'battery voltage' command
-// result in mV and mA
-void battery()
+// telemetry: battery and uptime
+void telemetry()
 {
-  float shuntvoltage = ina219.getShuntVoltage_mV();
-  float busvoltage = ina219.getBusVoltage_V();
-  int current_mA;
-  current_mA = int(ina219.getCurrent_mA());
-  int voltage;
-  voltage = (int)(busvoltage * 1000 + shuntvoltage);
+  int mV = int(ina219.getBusVoltage_V() * 1000);
+  int mA = getAvgAmps();
   Serial.write('b');
-  Serial.println(voltage);
+  Serial.println(mV);
   Serial.write('a');
-  Serial.println(current_mA);
+  Serial.println(mA);
+  Serial.write('c');
+  Serial.println(uAh);
+  Serial.write('u');
+  Serial.println(uptimeSeconds);
 }
 
 // INA219 control commands
@@ -329,6 +403,18 @@ void ina()
   Serial.print('i');
   Serial.println(reg);
 }
+
+//=======================================
+
+
+
+
+// 'power off' command
+void power()
+{
+  pulsePin(POWER_PIN, 20);
+}
+
 
 //=======================================
 
@@ -433,14 +519,14 @@ void driveEnable(boolean action)
 {
   if (action)
   {
-      motor_power(true);
+      motorPower(true);
       driveUART(true);
       lastDriveCommandTime = millis();
   }
   else
   {
       driveUART(false);
-      motor_power(false);
+      motorPower(false);
   }
 }
 
@@ -452,7 +538,7 @@ void driveUART(boolean action)
   driveEnabled = action;
 }
 
-void motor_power(boolean action)
+void motorPower(boolean action)
 {
   if (action)
   {
@@ -638,7 +724,7 @@ byte bctoi(byte index, byte count)
 {
   byte i = 0;
   byte fin = index + count;
-  if (fin > BUF_SIZE) fin = BUF_SIZE;
+  if (fin > COMMAND_BUFFER_SIZE) fin = COMMAND_BUFFER_SIZE;
   while (buf[index] >= '0' && buf[index] <= '9' && index < fin)
   {
     i *= 10;
@@ -653,7 +739,7 @@ uint16_t bctoi16(byte index, byte count)
 {
   uint16_t i = 0;
   byte fin = index + count;
-  if (fin > BUF_SIZE) fin = BUF_SIZE;
+  if (fin > COMMAND_BUFFER_SIZE) fin = COMMAND_BUFFER_SIZE;
   while (buf[index] >= '0' && buf[index] <= '9' && index < fin)
   {
     i *= 10;
