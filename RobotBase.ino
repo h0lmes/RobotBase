@@ -17,7 +17,6 @@
 #define MOTOR_DISABLE_PIN 8
 
 // uptime //
-byte NewSecond = 0;
 byte HalfSecond = 0;
 unsigned long uptimeSeconds = 0;
 
@@ -30,35 +29,35 @@ byte bytesInBuffer = 0;
 byte crc = 0;
 
 // power measurment //
-#define AMPS_SIZE 30
+#define AMPS_SIZE 20
 #define AMPS_INTERVAL 50
 int amps[AMPS_SIZE];
 byte ampsIndex = 0;
 unsigned long lastAmpsTime = 0;
-long uAh = 0;
+long uAh = 0; // coulomb counter
 Adafruit_INA219 ina219;
 
+// in-robot display //
 #define DISPLAY_ALTER_INTERVAL 1500
 TM1650 tm;
 unsigned long lastTmTime = 0;
 int tmMode = 0;
 
 // common vars //
+#define COMMAND_TIMEOUT 1200
 unsigned long lastCommandTime;
-unsigned long commandTimeout = 2500;
 boolean IsConnected = false;
 
-// RoboClaw //
+// drive //
 #define RC_ADDR 0x80
-RoboClaw roboclaw(DRIVER_RX_PIN, DRIVER_TX_PIN);
-boolean driveEnabled = false;
-unsigned long lastDriveCommandTime;
-unsigned long driveCommandTimeout = 20000;
+#define DRIVE_COMMAND_TIMEOUT 20000
 #define MOTOR_COUNTER_START 3000
 #define MOTOR_TARGET_MAX 127
 #define MOTOR_VELOCITY_0 64
 #define MOTOR_VELOCITY_MAX 63
-#define MOTOR_TARGET_MAX 127
+RoboClaw roboclaw(DRIVER_RX_PIN, DRIVER_TX_PIN);
+boolean driveEnabled = false;
+unsigned long lastDriveCommandTime;
 byte motor1 = MOTOR_VELOCITY_0;
 byte motor1_target = MOTOR_VELOCITY_0;
 byte motor2 = MOTOR_VELOCITY_0;
@@ -66,7 +65,7 @@ byte motor2_target = MOTOR_VELOCITY_0;
 byte motor_increment = 5;
 unsigned int motor_counter = 0;
 
-// servo controller
+// servo controller //
 BMSerial ssc(SSC_RX_PIN, SSC_TX_PIN);
 MiniMaestro maestro(ssc);
 
@@ -119,7 +118,7 @@ void loop()
   // serial input
   ReadSerial();
   if (IsConnected) CheckCommandTimeout();
-  if (driveEnabled) CheckDriveCommandTimeout();
+  if (driveEnabled) checkDriveCommandTimeout();
   ReadAmps();
   DisplayVA();
   
@@ -130,19 +129,15 @@ void loop()
 
 void MaintainUptime()
 {
-  if (millis() % 1000 <= 500 && HalfSecond == 0)
+  unsigned long x = millis() % 1000;
+  
+  if (x <= 500 && HalfSecond == 0)
   {
-    NewSecond = 1;
+    uptimeSeconds++;
     HalfSecond = 1;
   }
 
-  if (millis() % 1000 > 500) HalfSecond = 0;
-
-  if (NewSecond == 1)
-  {
-    uptimeSeconds++;
-    NewSecond = 0;
-  }
+  if (x > 500) HalfSecond = 0;
 } 
 
 //=======================================
@@ -151,42 +146,61 @@ void MaintainUptime()
 
 //=======================================
 
+void ResetAmps()
+{
+  uAh = 0;
+  for (int i = 0; i < AMPS_SIZE; i++) amps[i] = 0;
+}
+
 void ReadAmps()
 {
   unsigned long ampsTime = millis();
   if (ampsTime < lastAmpsTime) lastAmpsTime = 0;
-  if (ampsTime - lastAmpsTime > AMPS_INTERVAL)
+  if (ampsTime - lastAmpsTime >= AMPS_INTERVAL)
   {
     lastAmpsTime = ampsTime;
-    amps[ampsIndex] = int(ina219.getCurrent_mA()); 
+    amps[ampsIndex] = int(ina219.getCurrent_mA());
+    
+    // reset uAh counter on charge begin/end
+    int prev, cur;
+    cur = amps[ampsIndex];
+    if (ampsIndex > 0) prev = amps[ampsIndex - 1]; else prev = amps[AMPS_SIZE - 1];
+    if ((cur > 0 && prev < 0) || (cur < 0 && prev > 0))
+    {
+      ResetAmps();
+      return;
+    }
+    
     ampsIndex++;
     if (ampsIndex >= AMPS_SIZE)
     {
       ampsIndex = 0;
-      UpdateUAh();
+      Update_uAh();
     }
   }
 }
 
-int getAvgAmps()
+float getAvgAmps()
 {
   long ampsSum = 0;
   for (int i = 0; i < AMPS_SIZE; i++) ampsSum += amps[i];
-  return int(ampsSum / AMPS_SIZE);
+  return ampsSum / AMPS_SIZE;
 }
 
-void UpdateUAh()
+void Update_uAh()
 {
-  int mA = getAvgAmps();
-  uAh += int(mA * 5 / 12);
+  float mA = getAvgAmps();
+  uAh += int(mA * 5 / 18);
 }
 
 void DisplayVA()
 {
   unsigned long tmTime = millis();
   if (tmTime < lastTmTime) lastTmTime = 0;
-  if (tmTime - lastTmTime > DISPLAY_ALTER_INTERVAL)
+  if (tmTime - lastTmTime >= DISPLAY_ALTER_INTERVAL)
   {
+    lastTmTime = tmTime;
+    
     if (tmMode == 0)
     {
       displayVolts();
@@ -205,20 +219,18 @@ void DisplayVA()
       tm.displayString("CONN");
       tmMode = 0;
     }
-    
-    lastTmTime = tmTime;
   }
 }
 
 void displayVolts()
 {
-    int voltage = int(ina219.getBusVoltage_V() * 100);
-    displayInt(voltage, 2);
+  int voltage = int(ina219.getBusVoltage_V() * 100);
+  displayInt(voltage, 2);
 }
 
 void displayAmps()
 {
-  int mA = getAvgAmps();
+  int mA = abs(int(getAvgAmps()));
   displayInt(mA, 1);
 }
 
@@ -292,10 +304,9 @@ void crc8(byte x)
 
 void CheckCommandTimeout()
 {
-  if (commandTimeout == 0) return;
   unsigned long commandTime = millis();
   if (commandTime >= lastCommandTime) commandTime -= lastCommandTime; else lastCommandTime = 0;
-  if (commandTime > commandTimeout) OnDisconnected();
+  if (commandTime > COMMAND_TIMEOUT) OnDisconnected();
 }
 
 void OnDisconnected()
@@ -372,7 +383,7 @@ void Execute()
 void telemetry()
 {
   int mV = int(ina219.getBusVoltage_V() * 1000);
-  int mA = getAvgAmps();
+  int mA = int(getAvgAmps());
   Serial.write('b');
   Serial.println(mV);
   Serial.write('a');
@@ -549,12 +560,11 @@ void motorPower(boolean action)
   else pulsePin(MOTOR_DISABLE_PIN, 20);
 }
   
-void CheckDriveCommandTimeout()
+void checkDriveCommandTimeout()
 {
-  if (driveCommandTimeout == 0) return;
   unsigned long driveCommandTime = millis();
   if (driveCommandTime >= lastDriveCommandTime) driveCommandTime -= lastDriveCommandTime; else lastDriveCommandTime = 0;
-  if (driveCommandTime > driveCommandTimeout) driveEnable(false);
+  if (driveCommandTime > DRIVE_COMMAND_TIMEOUT) driveEnable(false);
 }
 
 //=======================================
