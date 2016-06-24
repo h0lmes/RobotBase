@@ -80,6 +80,8 @@ void displayVolts();
 void displayAmps();
 void displayInt(int value, int dot);
 void ReadSerial();
+boolean crc8ok();
+void crc8(byte x);
 void CheckCommandTimeout();
 void OnDisconnected();
 void OnValidCommand();
