@@ -70,6 +70,42 @@ BMSerial ssc(SSC_RX_PIN, SSC_TX_PIN);
 MiniMaestro maestro(ssc);
 
 //=======================================
+void MaintainUptime();
+void ResetAmps();
+void ReadAmps();
+float getAvgAmps();
+void Update_uAh();
+void DisplayVA();
+void displayVolts();
+void displayAmps();
+void displayInt(int value, int dot);
+void ReadSerial();
+void CheckCommandTimeout();
+void OnDisconnected();
+void OnValidCommand();
+void Execute();
+void telemetry();
+void ina();
+void power();
+void drive();
+void updateMotors();
+void driveStop();
+void driveReset();
+void driveEnable(boolean action);
+void driveUART(boolean action);
+void motorPower(boolean action);
+void checkDriveCommandTimeout();
+void servo();
+void sscEnable(boolean action);
+void sscUART(boolean action);
+void _write();
+void _read();
+void dread();
+void aread();
+void pulsePin(int pin, int ms);
+byte bctoi(byte index, byte count);
+uint16_t bctoi16(byte index, byte count);
+//=======================================
 
 void setup() 
 {
@@ -127,6 +163,12 @@ void loop()
   if (motor_counter == 0) updateMotors();
 }
 
+//=======================================
+
+//      in-robot telemetry counters
+
+//=======================================
+
 void MaintainUptime()
 {
   unsigned long x = millis() % 1000;
@@ -139,12 +181,6 @@ void MaintainUptime()
 
   if (x > 500) HalfSecond = 0;
 } 
-
-//=======================================
-
-//          in-robot Volts/Amps measurment
-
-//=======================================
 
 void ResetAmps()
 {
