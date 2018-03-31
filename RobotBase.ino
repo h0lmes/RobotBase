@@ -5,6 +5,7 @@
 #include <Adafruit_INA219.h>
 #include <TM1650.h>
 
+#define VERSION "v11"
 #define LED_PIN 13
 #define DRIVER_RX_PIN 12
 #define DRIVER_TX_PIN 11
@@ -29,9 +30,9 @@ byte bytesInBuffer = 0;
 byte crc = 0;
 
 // power measurment //
-#define AMPS_SIZE 20
+#define AMPS_ARRAY_SIZE 20
 #define AMPS_INTERVAL 50
-int amps[AMPS_SIZE];
+int amps[AMPS_ARRAY_SIZE];
 byte ampsIndex = 0;
 unsigned long lastAmpsTime = 0;
 long uAh = 0; // coulomb counter
@@ -46,7 +47,7 @@ int tmMode = 0;
 // common vars //
 #define COMMAND_TIMEOUT 2000
 unsigned long lastCommandTime;
-boolean IsConnected = false;
+boolean isConnected = false;
 
 // drive //
 #define RC_ADDR 0x80
@@ -70,27 +71,27 @@ BMSerial ssc(SSC_RX_PIN, SSC_TX_PIN);
 MiniMaestro maestro(ssc);
 
 //=======================================
-void MaintainUptime();
-void ResetAmps();
-void ReadAmps();
-float getAvgAmps();
-void Update_uAh();
-void DisplayVA();
+void maintainUptime();
+void resetAmps();
+void readAmps();
+float getAverageAmps();
+void updateCoulombCounter();
+void displayVoltsAmps();
 void displayVolts();
 void displayAmps();
 void displayInt(int value, int dot);
-void ReadSerial();
+void readSerial();
 boolean crc8ok();
 void crc8(byte x);
-void CheckCommandTimeout();
-void OnDisconnected();
-void OnValidCommand();
-void Execute();
+void checkHostCommandTimeout();
+void onHostCommandTimeout();
+void onHostCommandReceived();
+void executeBuffer();
 void telemetry();
 void ina();
 void power();
 void drive();
-void updateMotors();
+void motorDriverWorker();
 void driveStop();
 void driveReset();
 void driveEnable(boolean action);
@@ -107,6 +108,15 @@ void aread();
 void pulsePin(int pin, int ms);
 byte bctoi(byte index, byte count);
 uint16_t bctoi16(byte index, byte count);
+
+//=======================================
+//
+//
+//
+// setup & loop
+//
+//
+//
 //=======================================
 
 void setup() 
@@ -116,12 +126,12 @@ void setup()
   
   // power management //
   pinMode(SERVO_PIN, OUTPUT);
-  pinMode(MOTOR_ENABLE_PIN, OUTPUT);
   pinMode(POWER_PIN, OUTPUT);
+  pinMode(MOTOR_ENABLE_PIN, OUTPUT);
   pinMode(MOTOR_DISABLE_PIN, OUTPUT);
   digitalWrite(SERVO_PIN, LOW);
-  digitalWrite(MOTOR_ENABLE_PIN, LOW);
   digitalWrite(POWER_PIN, LOW);
+  digitalWrite(MOTOR_ENABLE_PIN, LOW);
   digitalWrite(MOTOR_DISABLE_PIN, LOW);
   motorPower(false);
   
@@ -147,114 +157,108 @@ void setup()
   sscUART(false);
 }
 
-//=======================================
-
 void loop()
 {
-  MaintainUptime();
+  maintainUptime();
   
   // serial input
-  ReadSerial();
-  if (IsConnected) CheckCommandTimeout();
+  readSerial();
+  if (isConnected) checkHostCommandTimeout();
   if (driveEnabled) checkDriveCommandTimeout();
-  ReadAmps();
-  DisplayVA();
+  readAmps();
+  displayVoltsAmps();
   
   // motors
   if (motor_counter > 0) motor_counter--;
-  if (motor_counter == 0) updateMotors();
+  else motorDriverWorker();
 }
 
 //=======================================
-
-//      in-robot telemetry counters
-
+//
+//
+//
+// telemetry counters
+//
+//
+//
 //=======================================
 
-void MaintainUptime()
+void maintainUptime()
 {
-  unsigned long x = millis() % 1000;
-  
+  unsigned long x = millis() % 1000;  
   if (x <= 500 && HalfSecond == 0)
   {
     uptimeSeconds++;
     HalfSecond = 1;
   }
-
   if (x > 500) HalfSecond = 0;
 } 
 
-void ResetAmps()
+void resetAmps()
 {
   uAh = 0;
-  for (int i = 0; i < AMPS_SIZE; i++) amps[i] = 0;
+  for (int i = 0; i < AMPS_ARRAY_SIZE; i++) amps[i] = 0;
 }
 
-void ReadAmps()
+void readAmps()
 {
   unsigned long ampsTime = millis();
   if (ampsTime < lastAmpsTime) lastAmpsTime = 0;
   if (ampsTime - lastAmpsTime >= AMPS_INTERVAL)
   {
     lastAmpsTime = ampsTime;
-    amps[ampsIndex] = int(ina219.getCurrent_mA());
+    amps[ampsIndex] = int(ina219.getCurrent_mA()) * 4; // *4 - account for shunt modification
     
     // reset uAh counter on charge begin/end
     int prev, cur;
     cur = amps[ampsIndex];
-    if (ampsIndex > 0) prev = amps[ampsIndex - 1]; else prev = amps[AMPS_SIZE - 1];
+    if (ampsIndex > 0)
+        prev = amps[ampsIndex - 1];
+    else
+        prev = amps[AMPS_ARRAY_SIZE - 1];
     if ((cur > 0 && prev < 0) || (cur < 0 && prev > 0))
     {
-      ResetAmps();
+      resetAmps();
       return;
     }
     
     ampsIndex++;
-    if (ampsIndex >= AMPS_SIZE)
+    if (ampsIndex >= AMPS_ARRAY_SIZE)
     {
       ampsIndex = 0;
-      Update_uAh();
+      updateCoulombCounter();
     }
   }
 }
 
-float getAvgAmps()
+float getAverageAmps()
 {
   long ampsSum = 0;
-  for (int i = 0; i < AMPS_SIZE; i++) ampsSum += amps[i];
-  return ampsSum / AMPS_SIZE;
+  for (int i = 0; i < AMPS_ARRAY_SIZE; i++) ampsSum += amps[i];
+  return ampsSum / AMPS_ARRAY_SIZE;
 }
 
-void Update_uAh()
+void updateCoulombCounter()
 {
-  float mA = getAvgAmps();
+  float mA = getAverageAmps();
   uAh += int(mA * 5 / 18);
 }
 
-void DisplayVA()
+void displayVoltsAmps()
 {
   unsigned long tmTime = millis();
   if (tmTime < lastTmTime) lastTmTime = 0;
   if (tmTime - lastTmTime >= DISPLAY_ALTER_INTERVAL)
   {
-    lastTmTime = tmTime;
-    
+    lastTmTime = tmTime;    
     if (tmMode == 0)
     {
       displayVolts();
       tmMode = 1;
     }
     else
-    if (tmMode == 1)
     {
       displayAmps();
-      if (IsConnected) tmMode = 2;
-      else tmMode = 0;
-    }
-    else
-    if (tmMode == 2)
-    {
-      tm.displayString("CONN");
       tmMode = 0;
     }
   }
@@ -268,7 +272,7 @@ void displayVolts()
 
 void displayAmps()
 {
-  int mA = abs(int(getAvgAmps()));
+  int mA = abs(int(getAverageAmps()));
   displayInt(mA, 1);
 }
 
@@ -288,22 +292,29 @@ void displayInt(int value, int dot)
 }
 
 //=======================================
-
-
-
+//
+//
+//
+//
+//
+// receive host commands
+//
+//
+//
+//
+//
 //=======================================
 
-// read serial data into buffer. execute command
-void ReadSerial()
+// read serial data into buffer. executeBuffer command
+void readSerial()
 {
   byte b;
-  while (Serial.available())
-  {
+  while (Serial.available()) {
     b = Serial.read();
     buf[bytesInBuffer] = b;
     if (b == 10 || b == 13 || bytesInBuffer >= MAX_COMMAND_LENGTH)
     {
-      if (bytesInBuffer > 0) Execute();
+      if (bytesInBuffer > 0) executeBuffer();
       bytesInBuffer = 0; // empty input buffer (only one command at a time)
       return;
     }
@@ -338,145 +349,114 @@ void crc8(byte x)
   crc = x;
 }
 
-//=======================================
-
-void CheckCommandTimeout()
+void onHostCommandReceived()
 {
-  unsigned long commandTime = millis();
-  if (commandTime >= lastCommandTime) commandTime -= lastCommandTime; else lastCommandTime = 0;
-  if (commandTime > COMMAND_TIMEOUT) OnDisconnected();
-}
-
-void OnDisconnected()
-{
-  driveStop();
-  driveEnable(false);
-  IsConnected = false;
-}
-
-void OnValidCommand()
-{
-  IsConnected = true;
+  isConnected = true;
   lastCommandTime = millis();
 }
 
-//=======================================
+void checkHostCommandTimeout()
+{
+  unsigned long commandTime = millis();
+  if (commandTime >= lastCommandTime)
+      commandTime -= lastCommandTime;
+  else
+      lastCommandTime = 0;
+  if (commandTime > COMMAND_TIMEOUT)
+      onHostCommandTimeout();
+}
+
+void onHostCommandTimeout()
+{
+  driveStop();
+  driveEnable(false);
+  isConnected = false;
+}
 
 // report error
 void err()
 { Serial.println("err"); }
 
-// report negative acknowledge
+// report negative acknowledgement
 void nak()
 { Serial.println("nak"); }
 
-// execute command in buffer //
-// the first character is a command identifier
-// the second is a subcommand
-void Execute()
+// execute a command in buffer.
+// the first character is a command identifier, the second is a subcommand
+void executeBuffer()
 {
   cmd = buf[0];
-  if (cmd == 0 || cmd == 32) return;
-  
+  if (cmd == 0 || cmd == 32) return;  
   if (cmd == 'd') drive();
   else
-  if (cmd == 'p') power();
+  if (cmd == 'p') powerOff();
   else
   if (cmd == 's') servo();
   else
-  if (cmd == 't') telemetry(); // reply contains a-amps, b-volts, c-charge, u-uptime
-  else
-  if (cmd == 'i') ina();
-  else
-  if (cmd == 'v') Serial.println("v9");
+  if (cmd == 't') telemetry();
   else
   if (cmd == 'r') _read();
   else
   if (cmd == 'w') _write();
   else
-  if (cmd == 'z') { OnDisconnected(); return; }
+  if (cmd == 'v') Serial.println(VERSION);
   else
-  {
-    nak(); return;
+  if (cmd == 'z') { onHostCommandTimeout(); return; }
+  else {
+    nak();
+    return;
   }
   
-  OnValidCommand();
+  onHostCommandReceived();
+}
+
+// power off command
+void powerOff()
+{
+  pulsePin(POWER_PIN, 20);
 }
 
 //=======================================
-
-
-
-
-
+//
+//
+//
+//
+//
 // telemetry
-
-
-
-
-
+//
+//
+//
+//
+//
 //=======================================
 
-// telemetry: battery and uptime
+// send telemetry to host: amps, volts, charge, uptime
 void telemetry()
 {
   int mV = int(ina219.getBusVoltage_V() * 1000);
-  int mA = int(getAvgAmps());
-  Serial.write('b');
-  Serial.println(mV);
+  int mA = int(getAverageAmps());
   Serial.write('a');
   Serial.println(mA);
+  Serial.write('b');
+  Serial.println(mV);
   Serial.write('c');
   Serial.println(uAh);
   Serial.write('u');
   Serial.println(uptimeSeconds);
 }
 
-// INA219 control commands
-void ina()
-{
-  uint16_t reg = 0;
-  cmd = buf[1]; 
-  if (cmd == '0') ina219.wireReadRegister(0, &reg);
-  else if (cmd == '1') ina219.wireReadRegister(1, &reg);
-  else if (cmd == '2') ina219.wireReadRegister(2, &reg);
-  else if (cmd == '3') ina219.wireReadRegister(3, &reg);
-  else if (cmd == '4') ina219.wireReadRegister(4, &reg);
-  else if (cmd == '5') ina219.wireReadRegister(5, &reg);
-  else if (cmd == 'с')
-  {
-    uint16_t val = bctoi16(2, 6);
-    ina219.wireWriteRegister(0, val);
-    ina219.wireReadRegister(0, &reg);
-  }
-  Serial.print('i');
-  Serial.println(reg);
-}
-
 //=======================================
-
-
-
-
-// 'power off' command
-void power()
-{
-  pulsePin(POWER_PIN, 20);
-}
-
-
-//=======================================
-
-
-
-
-
-// control motors
-
-
-
-
-
+//
+//
+//
+//
+//
+// motors driver control
+//
+//
+//
+//
+//
 //=======================================
 
 // 'drive' command
@@ -499,7 +479,7 @@ void drive()
 }
 
 // update motor velocities
-void updateMotors()
+void motorDriverWorker()
 {
   if (motor1 == motor1_target && motor2 == motor2_target) return;
   // enable motor driver if it is disabled
@@ -556,6 +536,7 @@ void driveStop()
   lastDriveCommandTime = millis();
 }
 
+// reset motors driver
 void driveReset()
 {
   driveEnable(false);
@@ -587,6 +568,7 @@ void driveUART(boolean action)
   driveEnabled = action;
 }
 
+// enable/disable motors driver
 void motorPower(boolean action)
 {
   if (action)
@@ -606,22 +588,25 @@ void checkDriveCommandTimeout()
 }
 
 //=======================================
-
-
-
-
-
-
-
-
-
-
-
-
+//
+//
+//
+//
+//
+// servo control
+//
+//
+//
+//
+//
 //=======================================
 
-// ex: sp002000 - set servo 00 to the min position
-// ex: sp159999 - set servo 15 to the max position
+// se - enable servo controller
+// sd - disable servo controller
+// sp002000 - set servo 00 to the min position
+// sp159999 - set servo 15 to the max position
+// ss010200 - set servo 01 speed to 200
+// sa101000 - set servo 10 accel to 1000
 void servo()
 {
   uint8_t channel;
@@ -630,31 +615,27 @@ void servo()
   channel = bctoi(2, 2);
   value = bctoi16(4, 4);
   
-  if (channel >= 18) // channels 18 and above = all servos
+  if (channel >= 99) // channel 99 = all servos
   {
-    if (cmd == 's') // servo speed
-    {
+    if (cmd == 's') {
       for (channel = 0; channel < 18; channel++) maestro.setSpeed(channel, value);
     }
-    else
-    if (cmd == 'a') // servo accel
-    {
+    else if (cmd == 'a') {
       for (channel = 0; channel < 18; channel++) maestro.setAcceleration(channel, value);
     }
-    else
-      nak();
+    else nak();
     return;
   }
   
-  if (cmd == 'p') maestro.setTarget(channel, value); // servo position
+  if (cmd == 'p') maestro.setTarget(channel, value);
   else
-  if (cmd == 's') maestro.setSpeed(channel, value); // servo speed
+  if (cmd == 's') maestro.setSpeed(channel, value);
   else
-  if (cmd == 'a') maestro.setAcceleration(channel, value); // servo accel
+  if (cmd == 'a') maestro.setAcceleration(channel, value);
   else
-  if (cmd == 'e') sscEnable(true); // enable servo controller
+  if (cmd == 'e') sscEnable(true);
   else
-  if (cmd == 'd') sscEnable(false); // disable servo controller
+  if (cmd == 'd') sscEnable(false);
   else
     nak();
 }
@@ -682,18 +663,17 @@ void sscUART(boolean action)
 }
 
 //=======================================
-
-
-
-
-
-
-
-
-
-
-
-
+//
+//
+//
+//
+//
+// GPIO direct access
+//
+//
+//
+//
+//
 //=======================================
 
 // 'digitalWrite' command
@@ -707,9 +687,8 @@ void _write()
   if (buf[3] == '0') digitalWrite(pin, LOW); else digitalWrite(pin, HIGH);
 }
 
-//=======================================
-
 // 'read' command
+// see examples below
 void _read()
 {
   cmd = buf[1];
@@ -753,7 +732,9 @@ void aread()
 //
 //
 //
+//
 // helper functions
+//
 //
 //
 //
